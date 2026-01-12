@@ -196,10 +196,10 @@ u8 rewrite_dirty_flash_pages(void)
 		if (page_dirty_mask[i])
 		{
 			// Erase the entire sector and rewrite all data
-			app_log_debug("Erasing flash sector...", NULL);
+			app_log_trace("Erasing flash sector...", NULL);
 			memset(page_dirty_mask, 0, sizeof(page_dirty_mask));
 			erase_flash_page(APP_BASE);
-			app_log_debug("Writing %u bytes to flash...", sizeof(disk_buffer));
+			app_log_trace("Writing %u bytes to flash...", sizeof(disk_buffer));
 			f_buff = (u16 *)disk_buffer;
 			for (j = 0; j < sizeof(disk_buffer); j += 2)
 			{
@@ -208,7 +208,7 @@ u8 rewrite_dirty_flash_pages(void)
 					app_log_error("Unable to program flash at index %lu", j);
 				}
 			}
-			app_log_debug("Flash write loop completed", NULL);
+			app_log_trace("Flash write loop completed", NULL);
 			break;
 		}
 	}
@@ -364,7 +364,7 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 	u8 *comment_start;
 	size_t value_len;
 
-	app_log_trace("validate_file: starting, root_addr=%d", root_addr);
+	app_log_trace("starting, root_addr=%d", root_addr);
 
 	// Use static buffers instead of stack allocation
 	memset(parse_buffer, 0x00, sizeof(parse_buffer));
@@ -414,18 +414,18 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 	if (p_file_valid)
 	{
 		read_source = p_file;
-		app_log_trace("validate_file: reading from p_file (macOS location)");
+		app_log_trace("reading from p_file (macOS location)");
 	}
 	else if (file_sector_valid)
 	{
 		read_source = FILE_SECTOR;
-		app_log_trace("validate_file: reading from FILE_SECTOR (normalized)");
+		app_log_trace("reading from FILE_SECTOR (normalized)");
 	}
 	else
 	{
 		// Neither RAM location has valid content - this can happen if macOS
 		// dot files corrupted our RAM buffer. Try to recover from flash.
-		app_log_warn("validate_file: no valid content in RAM, reloading from flash");
+		app_log_warn("no valid content in RAM, reloading from flash");
 
 		// Reload FILE_SECTOR from flash
 		u8 *flash_file_sector = (u8 *)APP_BASE + 0x600;  // FILE_SECTOR offset in flash
@@ -442,7 +442,7 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 				{
 					file_sector_valid = true;
 					read_source = FILE_SECTOR;
-					app_log_debug("validate_file: recovered from flash");
+					app_log_debug("recovered from flash");
 					break;
 				}
 			}
@@ -452,14 +452,14 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 		{
 			// Flash also doesn't have valid content - use defaults
 			read_source = p_file;
-			app_log_trace("validate_file: flash also invalid, using defaults");
+			app_log_trace("flash also invalid, using defaults");
 		}
 	}
 
 	memcpy((u8 *)file_buffer, read_source, sizeof(file_buffer));
 
 	// Log first 64 bytes of file content for debugging
-	app_log_trace("validate_file: first bytes: %.60s", file_buffer);
+	app_log_trace("first bytes: %.60s", file_buffer);
 
 	// Parse each line from the file into parse_buffer
 	// Handle both CRLF (Windows) and LF (Unix/macOS) line endings
@@ -505,10 +505,10 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 		if (parse_buffer[idx][0] != '\0')
 		{
 			parsed_count++;
-			app_log_trace("validate_file: line %lu: %.40s...", idx, parse_buffer[idx]);
+			app_log_trace("line %lu: %.40s...", idx, parse_buffer[idx]);
 		}
 	}
-	app_log_trace("validate_file: parsed %lu lines", parsed_count);
+	app_log_trace("parsed %lu lines", parsed_count);
 
 	// Process each registered entry - search for it in parsed lines
 	for (k = 0; k < FILE_ENTRY_CNT; k++)
@@ -608,7 +608,7 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 		}
 	}
 
-	app_log_debug("validate_file: rebuilt file, size=%lu bytes", m);
+	app_log_trace("rebuilt file, size=%lu bytes", m);
 
 	// Update file size in directory entry (support sizes > 255 bytes)
 	// ROOT_SECTOR + root_addr*32 + 0x1C is where file size is stored
@@ -624,7 +624,7 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 	dir_entry[0x1A] = 0x02; // Starting cluster low byte
 	dir_entry[0x1B] = 0x00; // Starting cluster high byte
 
-	app_log_trace("validate_file: forcing cluster=2, size=%lu", m);
+	app_log_trace("forcing cluster=2, size=%lu", m);
 
 	// Update FAT chain for the new file size (always starts at cluster 2)
 	update_fat_chain(m);
@@ -893,7 +893,7 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 							Config_flag = entry[0x1A];
 							config_filesize = entry[0x1C] | (entry[0x1D] << 8);
 							txt_flag = 1;
-							app_log_trace("write_sector: CONFIG.TXT cluster=%u, size=%u",
+							app_log_trace("CONFIG.TXT cluster=%u, size=%u",
 										  entry[0x1A] | (entry[0x1B] << 8), config_filesize);
 							break;
 						}
@@ -956,7 +956,7 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 				if (config_cluster > 0 && write_cluster == config_cluster)
 				{
 					// This is CONFIG.TXT data - allow write
-					app_log_trace("write_sector: allowing CONFIG.TXT write to cluster %u (sector %lu)", write_cluster, sector);
+					app_log_trace("allowing CONFIG.TXT write to cluster %u (sector %lu)", write_cluster, sector);
 				}
 				// If this write is to cluster 2 (sector 64) - our normalized location
 				else if (write_cluster == 2)
@@ -980,7 +980,7 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 					if (!looks_like_config)
 					{
 						// This is NOT CONFIG.TXT - likely a dot file trying to use cluster 2
-						app_log_debug("write_sector: rejecting non-config write to cluster 2 (sector %lu, first byte: 0x%02X)", sector, sector_data[0]);
+						app_log_trace("rejecting non-config write to cluster 2 (sector %lu, first byte: 0x%02X)", sector, sector_data[0]);
 						continue;
 					}
 				}
@@ -995,7 +995,7 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 
 					if (is_dot_file)
 					{
-						app_log_debug("write_sector: rejecting dot file write to cluster %u (sector %lu)", write_cluster, sector);
+						app_log_trace("rejecting dot file write to cluster %u (sector %lu)", write_cluster, sector);
 						continue;
 					}
 				}
