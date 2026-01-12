@@ -15,6 +15,9 @@ extern char _user_data_size[];
 #define FILE_ENTRY_CNT 8
 #define FILE_ROW_CNT 2048  // Max length of a single config line (for private keys)
 #define FILE_CHAR_CNT 8192 // Max total file content size
+// Data area starts at sector 64 (cluster 2)
+#define DATA_FIRST_SECTOR 64
+#define SECTOR_TO_CLUSTER(s) ((s) - DATA_FIRST_SECTOR + 2)
 static uc32 VOLUME = 0x40DD8D18;
 static const u8 fat_data[] = {0xF8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static u8 CONFIG_FILENAME[] = "CONFIG  TXT";
@@ -276,6 +279,25 @@ u8 rewrite_all_flash_pages(void)
 	return HAL_OK;
 }
 
+// Helper to get CONFIG.TXT's starting cluster from directory entry
+static u16 get_config_start_cluster(void)
+{
+	u8 *entry = ROOT_SECTOR;
+	u8 name[12];
+	for (int i = 0; i < 16; i++)
+	{
+		memcpy(name, entry, 11);
+		name[11] = '\0';
+		Upper(name, 11);
+		if (memcmp(name, CONFIG_FILENAME, 11) == 0)
+		{
+			return entry[0x1A] | (entry[0x1B] << 8);
+		}
+		entry += 32;
+	}
+	return 0; // Not found
+}
+
 // Helper to find comment start in a value (tab followed by #)
 static u8 *find_comment_start(u8 *value)
 {
@@ -401,9 +423,37 @@ u8 validate_file(u8 *p_file, u16 root_addr)
 	}
 	else
 	{
-		// Neither has valid content, use p_file and hope for the best
-		read_source = p_file;
-		app_log_trace("validate_file: no valid content found, using p_file");
+		// Neither RAM location has valid content - this can happen if macOS
+		// dot files corrupted our RAM buffer. Try to recover from flash.
+		app_log_warn("validate_file: no valid content in RAM, reloading from flash");
+
+		// Reload FILE_SECTOR from flash
+		u8 *flash_file_sector = (u8 *)APP_BASE + 0x600;  // FILE_SECTOR offset in flash
+		memcpy(FILE_SECTOR, flash_file_sector, FILE_SECTOR_SIZE);
+
+		// Check again if FILE_SECTOR now has valid content
+		for (k = 0; k < FILE_ENTRY_CNT; k++)
+		{
+			if (entries[k].entry[0] != '\0')
+			{
+				size_t entry_len = strlen(entries[k].entry);
+				if (memcmp(FILE_SECTOR, entries[k].entry, entry_len) == 0 &&
+					FILE_SECTOR[entry_len] == '=')
+				{
+					file_sector_valid = true;
+					read_source = FILE_SECTOR;
+					app_log_debug("validate_file: recovered from flash");
+					break;
+				}
+			}
+		}
+
+		if (!file_sector_valid)
+		{
+			// Flash also doesn't have valid content - use defaults
+			read_source = p_file;
+			app_log_trace("validate_file: flash also invalid, using defaults");
+		}
 	}
 
 	memcpy((u8 *)file_buffer, read_source, sizeof(file_buffer));
@@ -872,6 +922,85 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 				// Beyond buffer - ignore write
 				continue;
 			}
+
+			// PROTECTION: Block macOS dot files from overwriting our normalized config data.
+			//
+			// Strategy: Check what file this cluster belongs to (from directory entry).
+			// - If this cluster is CONFIG.TXT's starting cluster, allow the write
+			// - If this cluster is NOT CONFIG.TXT's but would land on our normalized data
+			//   at cluster 2 (sector 64+), block it unless it looks like valid config
+			//
+			// This allows CONFIG.TXT writes to ANY cluster while blocking dot files
+			// that try to reuse cluster 2 after macOS "deletes" the old file.
+			{
+				u16 write_cluster = SECTOR_TO_CLUSTER(sector);
+				u16 config_cluster = get_config_start_cluster();
+
+				// Check if FILE_SECTOR already has valid CONFIG.TXT data (normalized)
+				bool file_sector_has_config = false;
+				for (u32 k = 0; k < FILE_ENTRY_CNT; k++)
+				{
+					if (entries[k].entry[0] != '\0')
+					{
+						size_t entry_len = strlen(entries[k].entry);
+						if (memcmp(FILE_SECTOR, entries[k].entry, entry_len) == 0 &&
+							FILE_SECTOR[entry_len] == '=')
+						{
+							file_sector_has_config = true;
+							break;
+						}
+					}
+				}
+
+				// If this write is to CONFIG.TXT's cluster (per directory), allow it
+				if (config_cluster > 0 && write_cluster == config_cluster)
+				{
+					// This is CONFIG.TXT data - allow write
+					app_log_trace("write_sector: allowing CONFIG.TXT write to cluster %u (sector %lu)", write_cluster, sector);
+				}
+				// If this write is to cluster 2 (sector 64) - our normalized location
+				else if (write_cluster == 2)
+				{
+					// Check if incoming data looks like CONFIG.TXT
+					bool looks_like_config = false;
+					for (u32 k = 0; k < FILE_ENTRY_CNT; k++)
+					{
+						if (entries[k].entry[0] != '\0')
+						{
+							size_t entry_len = strlen(entries[k].entry);
+							if (memcmp(sector_data, entries[k].entry, entry_len) == 0 &&
+								sector_data[entry_len] == '=')
+							{
+								looks_like_config = true;
+								break;
+							}
+						}
+					}
+
+					if (!looks_like_config)
+					{
+						// This is NOT CONFIG.TXT - likely a dot file trying to use cluster 2
+						app_log_debug("write_sector: rejecting non-config write to cluster 2 (sector %lu, first byte: 0x%02X)", sector, sector_data[0]);
+						continue;
+					}
+				}
+				// If this write is to clusters 3+ (sectors 65+) and we have normalized data
+				else if (write_cluster > 2 && write_cluster <= 2 + (FILE_SECTOR_SIZE / SECTOR_SIZE) && file_sector_has_config)
+				{
+					// Check if this is a continuation of CONFIG.TXT or a dot file
+					// Dot files have characteristic patterns at start
+					bool is_dot_file = (sector_data[0] == 0x00 ||  // Resource fork padding
+									   sector_data[0] == 0x05 ||   // Deleted entry marker
+									   (sector_data[0] == '.' && sector_data[1] != '\0')); // Dot file content
+
+					if (is_dot_file)
+					{
+						app_log_debug("write_sector: rejecting dot file write to cluster %u (sector %lu)", write_cluster, sector);
+						continue;
+					}
+				}
+			}
+
 			if (memcmp(sector_data, FILE_SECTOR + data_offset, SECTOR_SIZE))
 			{
 				memcpy(FILE_SECTOR + data_offset, sector_data, SECTOR_SIZE);
