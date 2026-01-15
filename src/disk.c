@@ -1,4 +1,5 @@
 #include "disk.h"
+#include <stdio.h>
 
 // Linker symbols for user data flash region (defined in linker script)
 // Declared as char arrays to avoid "reading N bytes from 4-byte object" warnings
@@ -50,7 +51,6 @@ static u8 *FAT1_SECTOR = &disk_buffer[0x000];
 static u8 *FAT2_SECTOR = &disk_buffer[0x200];
 static u8 *ROOT_SECTOR = &disk_buffer[0x400];
 static u8 *VOLUME_BASE = &disk_buffer[0x416];
-static u8 *OTHER_FILES = &disk_buffer[0x420];
 static u8 *FILE_SECTOR = &disk_buffer[0x600];
 #define FILE_SECTOR_SIZE (0x4000 - 0x600) // Available space for file data
 
@@ -160,7 +160,6 @@ static HAL_StatusTypeDef write_flash_halfword(u32 Address, u16 Data)
 u8 rewrite_dirty_flash_pages(void)
 {
 	u32 i, j;
-	u8 result;
 	u16 *f_buff;
 	HAL_StatusTypeDef status;
 
@@ -827,9 +826,7 @@ void read_sector(u8 *pbuffer, u32 disk_addr)
 u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 {
 	u32 i;
-	u8 illegal = 0;
 	u8 ver[20];
-	static u16 Config_flag = 0;
 	static u8 txt_flag = 0;
 	u8 config_filesize = 0;
 
@@ -890,7 +887,6 @@ u8 write_sector(u8 *buff, u32 diskaddr, u32 length) // PC Save data call
 						memcpy(ver, entry, 12);
 						if (memcmp(ver, CONFIG_FILENAME, 11) == 0)
 						{
-							Config_flag = entry[0x1A];
 							config_filesize = entry[0x1C] | (entry[0x1D] << 8);
 							txt_flag = 1;
 							app_log_trace("CONFIG.TXT cluster=%u, size=%u",
